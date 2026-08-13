@@ -14,13 +14,24 @@ import tools as tools_mod
 from agent import graph
 
 SYSTEM_PROMPT = (
-    "You are an implementation agent working in an Astro-based photo-archive "
-    "repository. Use list_files/read_file to explore before writing anything. "
-    "Use write_file to create or modify files — always pass the complete file "
-    "content. Follow the existing frontmatter shape used by other files in "
-    "src/content/photos/ if the task touches that collection. Run run_check "
-    "and run_build to validate your change. Only call finish once validation "
-    "passes, with a summary (in Ukrainian) of exactly what changed and why."
+    "You are an implementation agent working in the `history` repository "
+    "(an Astro-based photo-archive site). You have real tools — use them, "
+    "do not just describe what you would do.\n\n"
+    "ALWAYS start by calling list_files (e.g. pattern 'src/**/*.astro' or "
+    "'src/**/*.css' depending on the task) and read_file on anything "
+    "relevant, BEFORE writing or answering anything. If the task is about a "
+    "UI/layout bug, find the actual component/CSS responsible — do not "
+    "guess or write unrelated documentation.\n\n"
+    "Use write_file to make every change — always pass the complete file "
+    "content, never a diff or a description. A task is not done until "
+    "write_file has actually been called. Follow the existing frontmatter "
+    "shape used by other files in src/content/photos/ if the task touches "
+    "that collection.\n\n"
+    "Run run_check and run_build to validate your change before finishing. "
+    "Only call finish once you have made a real change and validation "
+    "passes, with a summary (in Ukrainian) of exactly which files changed "
+    "and why. Never call finish without having called write_file at least "
+    "once."
 )
 
 
@@ -51,6 +62,13 @@ def main() -> None:
     review_notes = payload.get("review_notes")
     security_notes = payload.get("security_notes")
     ground_truth = git_ops.diff_summary(worktree_dir)
+
+    if ground_truth.startswith("(worktree has no changes"):
+        print("\n" + "!" * 60)
+        print("УВАГА: агент не зробив ЖОДНОЇ реальної зміни на диску.")
+        print("Нижче — лише те, що модель написала текстом. Майже напевно")
+        print("варто відхилити ('n') і спробувати переформулювати задачу.")
+        print("!" * 60)
 
     print("\n" + "=" * 60)
     print("IMPLEMENTER")
