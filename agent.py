@@ -34,13 +34,14 @@ from tools import all_tools
 import review
 
 NUDGE_MESSAGE = (
-    "You have not made any actual file change yet — write_file has not been "
-    "called. Looking at files is not enough. You MUST now call write_file "
-    "with the complete new content of whichever file needs to change. Do "
-    "not describe the fix, do not ask for clarification — make the change "
-    "now based on what you found. If you are genuinely blocked (e.g. the "
-    "file/section you'd need to edit does not exist), say so explicitly in "
-    "your next message instead of a generic offer to help."
+    "You have not made any actual change yet — neither write_file nor "
+    "delete_file has been called. Looking at files is not enough. You MUST "
+    "now call write_file (with the complete new content) or delete_file, "
+    "whichever the task requires. Do not describe the fix, do not ask for "
+    "clarification — make the change now based on what you found. If you "
+    "are genuinely blocked (e.g. the file/section you'd need to edit does "
+    "not exist), say so explicitly in your next message instead of a "
+    "generic offer to help."
 )
 
 
@@ -83,12 +84,15 @@ def _extract_summary(messages: list) -> str:
     return getattr(last, "content", None) or "(agent stopped without calling finish)"
 
 
+_CHANGE_TOOLS = {"write_file", "delete_file"}
+
+
 def _has_written_files(messages: list) -> bool:
     # Exploring (list_files/read_file) is not enough — require an actual
-    # write_file call before "finish" (or giving up) is accepted. "finish"
-    # itself is intercepted in route_after_worker before ToolNode ever runs
-    # it, so this only ever sees genuine tool executions.
-    return any(isinstance(m, ToolMessage) and m.name == "write_file" for m in messages)
+    # write_file/delete_file call before "finish" (or giving up) is accepted.
+    # "finish" itself is intercepted in route_after_worker before ToolNode
+    # ever runs it, so this only ever sees genuine tool executions.
+    return any(isinstance(m, ToolMessage) and m.name in _CHANGE_TOOLS for m in messages)
 
 
 def nudge(state: State) -> dict:

@@ -71,6 +71,20 @@ def write_file(path: str, content: str) -> str:
 
 
 @tool
+def delete_file(path: str) -> str:
+    """Delete a file from the repository. Use this to remove dead code/unused
+    files — do not try to "delete" a file by overwriting it with write_file.
+    """
+    p = _resolve(path)
+    if not p.exists():
+        return f"Error: '{path}' does not exist (nothing to delete)."
+    if not p.is_file():
+        return f"Error: '{path}' is not a regular file — refusing to delete."
+    p.unlink()
+    return f"Deleted {path}"
+
+
+@tool
 def run_check() -> str:
     """Run the project's `npm run check` (schema/type validation) in the
     worktree and return its output. Call this before finishing.
@@ -111,4 +125,4 @@ def finish(summary: str) -> str:
     return summary
 
 
-all_tools = [list_files, read_file, write_file, run_check, run_build, finish]
+all_tools = [list_files, read_file, write_file, delete_file, run_check, run_build, finish]
