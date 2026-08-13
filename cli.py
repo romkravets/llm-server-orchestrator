@@ -12,6 +12,7 @@ from langgraph.types import Command
 import git_ops
 import tools as tools_mod
 from agent import graph
+from config import IMPLEMENTER_MODEL, IMPLEMENTER_PROVIDER
 
 SYSTEM_PROMPT = (
     "You are an implementation agent working in the `history` repository "
@@ -42,8 +43,9 @@ def main() -> None:
     task = sys.argv[1]
 
     worktree_dir, branch = git_ops.create_worktree()
-    print(f"[office] worktree: {worktree_dir}")
-    print(f"[office] branch:   {branch}")
+    print(f"[office] worktree:    {worktree_dir}")
+    print(f"[office] branch:      {branch}")
+    print(f"[office] implementer: {IMPLEMENTER_PROVIDER}/{IMPLEMENTER_MODEL}")
 
     tools_mod.set_worktree(worktree_dir)
 

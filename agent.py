@@ -16,22 +16,31 @@ from typing import Annotated, TypedDict
 
 from langchain_core.messages import ToolMessage
 from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
-from config import MAX_AGENT_STEPS, OLLAMA_BASE_URL, OLLAMA_MODEL
+from config import (
+    HERMES_PROXY_URL,
+    IMPLEMENTER_MODEL,
+    IMPLEMENTER_PROVIDER,
+    MAX_AGENT_STEPS,
+    OLLAMA_BASE_URL,
+)
 from tools import all_tools
 import review
 
 NUDGE_MESSAGE = (
-    "You have not called any tools yet. Before finishing, you MUST call "
-    "list_files/read_file to actually look at the relevant code, then "
-    "write_file to make the real change on disk. Do not describe a fix in "
-    "prose instead of making it — that is not acceptable. Explore the repo "
-    "now and make the actual change."
+    "You have not made any actual file change yet — write_file has not been "
+    "called. Looking at files is not enough. You MUST now call write_file "
+    "with the complete new content of whichever file needs to change. Do "
+    "not describe the fix, do not ask for clarification — make the change "
+    "now based on what you found. If you are genuinely blocked (e.g. the "
+    "file/section you'd need to edit does not exist), say so explicitly in "
+    "your next message instead of a generic offer to help."
 )
 
 
@@ -43,7 +52,21 @@ class State(TypedDict):
     security_notes: str
 
 
-llm = ChatOllama(model=OLLAMA_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.2)
+if IMPLEMENTER_PROVIDER == "hermes":
+    # Cloud model via `hermes proxy start --provider nous` (OpenAI-compatible
+    # endpoint on localhost — must already be running). Bearer token content
+    # is irrelevant; the proxy attaches real credentials itself.
+    llm = ChatOpenAI(
+        base_url=HERMES_PROXY_URL,
+        api_key="unused",
+        model=IMPLEMENTER_MODEL,
+        temperature=0.2,
+        timeout=90,
+        max_retries=3,
+    )
+else:
+    llm = ChatOllama(model=IMPLEMENTER_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.2)
+
 llm_with_tools = llm.bind_tools(all_tools)
 
 
@@ -60,13 +83,16 @@ def _extract_summary(messages: list) -> str:
     return getattr(last, "content", None) or "(agent stopped without calling finish)"
 
 
-def _has_used_tools(messages: list) -> bool:
-    # "finish" is intercepted in route_after_worker before ToolNode ever
-    # runs it, so any real ToolMessage here means a genuine tool ran.
-    return any(isinstance(m, ToolMessage) for m in messages)
+def _has_written_files(messages: list) -> bool:
+    # Exploring (list_files/read_file) is not enough — require an actual
+    # write_file call before "finish" (or giving up) is accepted. "finish"
+    # itself is intercepted in route_after_worker before ToolNode ever runs
+    # it, so this only ever sees genuine tool executions.
+    return any(isinstance(m, ToolMessage) and m.name == "write_file" for m in messages)
 
 
 def nudge(state: State) -> dict:
+    print(f"[office] nudge: agent explored but did not write anything yet (step {state.get('steps', 0)})")
     return {"messages": [("user", NUDGE_MESSAGE)]}
 
 
@@ -100,8 +126,8 @@ def route_after_worker(state: State) -> str:
     # Model answered in plain text without calling anything this turn.
     if state.get("steps", 0) >= MAX_AGENT_STEPS:
         return "reviewer"  # give up — let the human see what happened
-    if not _has_used_tools(state["messages"]):
-        # Never explored or wrote anything in this whole run — refuse to
+    if not _has_written_files(state["messages"]):
+        # Explored, maybe, but never actually wrote a file — refuse to
         # accept this as "done" and push it back to do real work.
         return "nudge"
     return "reviewer"
