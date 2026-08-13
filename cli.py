@@ -46,18 +46,33 @@ def main() -> None:
     result = graph.invoke(state, config)
 
     interrupts = result.get("__interrupt__")
-    model_summary = interrupts[0].value["summary"] if interrupts else None
+    payload = interrupts[0].value if interrupts else {}
+    model_summary = payload.get("summary")
+    review_notes = payload.get("review_notes")
+    security_notes = payload.get("security_notes")
     ground_truth = git_ops.diff_summary(worktree_dir)
 
     print("\n" + "=" * 60)
-    print("REVIEW")
+    print("IMPLEMENTER")
     print("=" * 60)
-    if model_summary and "did not call finish" not in model_summary and "stopped without calling finish" not in model_summary:
+    if model_summary and "stopped without calling finish" not in model_summary:
         print(model_summary)
-        print("-" * 60)
     else:
-        print("(модель не дала власного summary — показую реальний diff)")
-        print("-" * 60)
+        print("(модель не дала власного summary — див. реальний diff нижче)")
+
+    print("\n" + "=" * 60)
+    print("REVIEWER (deepseek-r1:14b)")
+    print("=" * 60)
+    print(review_notes or "(немає)")
+
+    print("\n" + "=" * 60)
+    print("SECURITY (qwen2.5-coder:7b)")
+    print("=" * 60)
+    print(security_notes or "(немає)")
+
+    print("\n" + "=" * 60)
+    print("РЕАЛЬНИЙ DIFF")
+    print("=" * 60)
     print(ground_truth)
     print("=" * 60)
 

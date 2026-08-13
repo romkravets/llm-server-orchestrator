@@ -18,6 +18,10 @@ def set_worktree(path: Path) -> None:
     _worktree_dir = path
 
 
+def get_worktree() -> Path:
+    return _worktree_dir
+
+
 def _node_env() -> dict:
     env = os.environ.copy()
     env["PATH"] = f"{NODE_BIN_DIR}:{env.get('PATH', '')}"

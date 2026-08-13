@@ -45,6 +45,27 @@ def diff_summary(worktree_dir: Path) -> str:
     return "\n".join(lines)
 
 
+def full_diff(worktree_dir: Path, max_chars: int = 12000) -> str:
+    """Full diff text (tracked changes + new file contents) for the reviewer
+    and security passes. Trimmed so it doesn't blow past a small model's
+    context window.
+    """
+    diff = _run(["git", "diff", "HEAD"], worktree_dir).stdout
+    # New files show up as untracked, not in `git diff` — include their
+    # content too via `git add -N` (intent-to-add) so diff picks them up
+    # without actually staging real changes.
+    _run(["git", "add", "-N", "-A"], worktree_dir)
+    diff = _run(["git", "diff", "HEAD"], worktree_dir).stdout
+
+    if not diff.strip():
+        return "(no diff — worktree unchanged)"
+    if len(diff) > max_chars:
+        head = diff[: int(max_chars * 0.8)]
+        tail = diff[-int(max_chars * 0.2) :]
+        diff = f"{head}\n\n[...TRUNCATED...]\n\n{tail}"
+    return diff
+
+
 def land(worktree_dir: Path, branch: str, message: str, push: bool = True, remove: bool = True) -> dict:
     out: dict = {}
 
