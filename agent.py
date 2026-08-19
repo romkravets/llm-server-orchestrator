@@ -1,9 +1,17 @@
 """The agent graph:
 
-  worker (LLM + tools loop)
+  planner (one-shot: sketch a short plan before acting — helps on
+           structured tasks, e.g. "fix this CSS rule", where pure ReAct
+           tends to wander; skipped implicitly for tasks simple enough
+           that the plan is just "look, then write")
+    -> worker (ReAct: LLM + tools loop)
     -> reviewer (single-shot critique, different model)
-    -> security (single-shot security scan, different model again)
-    -> human_review (interrupt, shows all three reports + real diff)
+       -> if VERDICT: BLOCKING and under the revise budget: revise -> worker
+          (Supervisor-style loop-back — reviewer's specific complaint goes
+          back to the implementer instead of forcing a full human reject)
+       -> otherwise: security (single-shot security scan, different model again)
+    -> human_review (interrupt, shows all reports + real diff + whether a
+       revise round happened)
     -> resumes with the human's decision
 
 Same worker shape as the workshop's Day 1 agent; reviewer/security is the
@@ -51,6 +59,10 @@ class State(TypedDict):
     decision: str
     review_notes: str
     security_notes: str
+    revise_count: int
+
+
+REVISE_LIMIT = 1
 
 
 if IMPLEMENTER_PROVIDER == "hermes":
@@ -66,9 +78,38 @@ if IMPLEMENTER_PROVIDER == "hermes":
         max_retries=3,
     )
 else:
-    llm = ChatOllama(model=IMPLEMENTER_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.2)
+    # client_kwargs -> merged into the underlying httpx client. Without an
+    # explicit timeout, a dropped/stalled connection to Ollama (observed
+    # live: process sat idle for 16+ minutes, no model loaded, no GPU
+    # activity, plain `ollama serve` still answered other requests fine)
+    # hangs the whole run forever instead of surfacing as an error.
+    llm = ChatOllama(
+        model=IMPLEMENTER_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0.2,
+        client_kwargs={"timeout": 180},
+    )
 
 llm_with_tools = llm.bind_tools(all_tools)
+
+PLAN_REQUEST = (
+    "Before touching anything, write a short plan (3-6 numbered steps) for "
+    "how you will accomplish this task with the available tools "
+    "(list_files, read_file, write_file, delete_file, run_check, run_build). "
+    "Plain text only — do not call any tool yet, just the plan."
+)
+
+
+def planner(state: State) -> dict:
+    # Plan & Execute pattern for the part ReAct is weak at ("structured
+    # problems, multi-step tasks" per the taught framework) — one sketch
+    # up front so the ReAct loop that follows has a checklist instead of
+    # wandering. The plan is advisory only: the worker can deviate from it
+    # once it actually sees the files.
+    response = llm.invoke(state["messages"] + [("user", PLAN_REQUEST)])
+    plan = response.content or "(no plan produced — proceeding directly)"
+    print(f"[office] plan:\n{plan}\n")
+    return {"messages": [("user", f"(your plan, for your own reference)\n{plan}\n\nNow execute it using your tools.")]}
 
 
 def worker(state: State) -> dict:
@@ -101,11 +142,32 @@ def nudge(state: State) -> dict:
 
 
 def reviewer_node(state: State) -> dict:
-    return {"review_notes": review.run_reviewer()}
+    notes = review.run_reviewer()
+    print(f"[office] reviewer:\n{notes}\n")
+    return {"review_notes": notes}
 
 
 def security_node(state: State) -> dict:
     return {"security_notes": review.run_security()}
+
+
+def _is_blocking(review_notes: str) -> bool:
+    return review_notes.strip().upper().startswith("VERDICT: BLOCKING")
+
+
+def revise(state: State) -> dict:
+    # Supervisor-style loop-back (the PR-Review-Team pattern): instead of
+    # forcing the human to reject the whole run over one fixable complaint,
+    # send the reviewer's specific finding back to the implementer once.
+    count = state.get("revise_count", 0) + 1
+    print(f"[office] revise: reviewer flagged a blocking issue, sending back to implementer ({count}/{REVISE_LIMIT})\n")
+    feedback = (
+        "The reviewer found a blocking issue with your change:\n\n"
+        f"{state.get('review_notes', '')}\n\n"
+        "Fix this specific issue (write_file/delete_file as needed), run "
+        "run_check/run_build again, then call finish again."
+    )
+    return {"messages": [("user", feedback)], "revise_count": count}
 
 
 def human_review(state: State) -> dict:
@@ -113,6 +175,7 @@ def human_review(state: State) -> dict:
         "summary": _extract_summary(state["messages"]),
         "review_notes": state.get("review_notes", ""),
         "security_notes": state.get("security_notes", ""),
+        "revised": state.get("revise_count", 0) > 0,
     }
     decision = interrupt(payload)
     return {"decision": decision}
@@ -137,15 +200,25 @@ def route_after_worker(state: State) -> str:
     return "reviewer"
 
 
+def route_after_reviewer(state: State) -> str:
+    notes = state.get("review_notes", "") or ""
+    if _is_blocking(notes) and state.get("revise_count", 0) < REVISE_LIMIT:
+        return "revise"
+    return "security"
+
+
 graph_builder = StateGraph(State)
+graph_builder.add_node("planner", planner)
 graph_builder.add_node("worker", worker)
 graph_builder.add_node("tools", ToolNode(tools=all_tools))
 graph_builder.add_node("nudge", nudge)
 graph_builder.add_node("reviewer", reviewer_node)
+graph_builder.add_node("revise", revise)
 graph_builder.add_node("security", security_node)
 graph_builder.add_node("human_review", human_review)
 
-graph_builder.add_edge(START, "worker")
+graph_builder.add_edge(START, "planner")
+graph_builder.add_edge("planner", "worker")
 graph_builder.add_conditional_edges(
     "worker",
     route_after_worker,
@@ -153,7 +226,12 @@ graph_builder.add_conditional_edges(
 )
 graph_builder.add_edge("tools", "worker")
 graph_builder.add_edge("nudge", "worker")
-graph_builder.add_edge("reviewer", "security")
+graph_builder.add_conditional_edges(
+    "reviewer",
+    route_after_reviewer,
+    {"revise": "revise", "security": "security"},
+)
+graph_builder.add_edge("revise", "worker")
 graph_builder.add_edge("security", "human_review")
 
 memory = MemorySaver()

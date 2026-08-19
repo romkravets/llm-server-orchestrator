@@ -39,7 +39,7 @@ doing better on hardware you already own:
 
 ```
                     ┌──────────────┐
-   your task  ───▶  │  Implementer │  gpt-oss:20b (local, tool-calling)
+   your task  ───▶  │  Implementer │  qwen2.5-coder:14b (local, tool-calling)
                     │  list_files / read_file / write_file / delete_file
                     │  run_check / run_build
                     └──────┬───────┘
@@ -109,11 +109,55 @@ All env vars, all optional:
 | `SECURITY_MODEL` | `qwen2.5-coder:7b` | Model for the security pass |
 | `MAX_AGENT_STEPS` | `20` | Safety cap on the implementer's tool-call loop |
 | `IMPLEMENTER_PROVIDER` | `ollama` | `ollama` or `hermes` (see warning below) |
-| `IMPLEMENTER_MODEL` | `gpt-oss:20b` (ollama) / `tencent/hy3:free` (hermes) | Implementer model — needs tool-calling support |
+| `IMPLEMENTER_MODEL` | `qwen2.5-coder:14b` (ollama) / `tencent/hy3:free` (hermes) | Implementer model — needs tool-calling support. `gpt-oss:20b` was the original default but doesn't fully fit this server's 12GB 3080 Ti — see note below. |
+| `AUTO_APPROVE_SAFE` | `1` | Land safe changes with no human at all — see gate section below |
+| `SAFE_PATH_PREFIXES` | `src/content/photos/,public/photos/` | Comma-separated paths eligible for no-human auto-land |
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | *(unset)* | Approve/reject risky runs from Telegram instead of the terminal |
+| `APPROVAL_TIMEOUT_SEC` | `1800` | How long to wait for a Telegram reply before auto-rejecting |
 
 Reviewer and security stay on local Ollama regardless of
 `IMPLEMENTER_PROVIDER` — they're cheap, fast, single-shot critiques; no
 reason to spend a cloud call on them.
+
+## Approval gate — unattended by default, Telegram for anything risky
+
+The `y/N` prompt above is only one of three gates now, tried in this order:
+
+1. **Auto-land, no human.** Only when the reviewer didn't come back
+   `BLOCKING`, no `revise` round happened, the security pass came back
+   short/clean, and every changed file is under `SAFE_PATH_PREFIXES`
+   (default: `src/content/photos/`, `public/photos/`). Commits, merges,
+   pushes, and cleans up the worktree immediately.
+2. **Telegram**, if `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` are set (put
+   them in `.env`, see `.env.example`). Sends the summary + reviewer +
+   security + real diff to your chat and polls for a reply. Reply
+   `так <id>` / `ні <id>` (the `[id]` shown in the message) — anything
+   else is ignored so stray chat messages can't misfire an approval.
+   Auto-rejects after `APPROVAL_TIMEOUT_SEC` (default 30 min) if you never
+   answer.
+3. **Terminal `y/N`**, as before — used whenever Telegram isn't
+   configured, or a network error makes polling impossible.
+
+Turn off the no-human path entirely with `AUTO_APPROVE_SAFE=0` (every run
+then needs Telegram or the terminal, regardless of how small the change).
+The implementer never gets closer to `main` than a disposable worktree
+either way — worst case of a wrong auto-approval is a bad commit on `main`
+that's still a normal `git revert` away, never a leaked secret or an
+untracked change to `SAFE_PATH_PREFIXES` itself (that file lives outside
+any path the agent is allowed to touch unattended).
+
+### Setting up the Telegram bot
+
+```
+1. Telegram -> @BotFather -> /newbot -> copy the token it gives you.
+2. Message your new bot anything (so Telegram knows your chat).
+3. curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | python3 -m json.tool
+   -> copy the message.chat.id you sent in step 2.
+4. cp .env.example .env, fill in TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID.
+```
+
+This talks to the Telegram Bot HTTP API directly (`notify.py`, stdlib
+only) — it does not depend on the `hermes` gateway service running.
 
 ## Known limitation: `IMPLEMENTER_PROVIDER=hermes` is currently broken
 

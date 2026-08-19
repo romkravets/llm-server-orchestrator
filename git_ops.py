@@ -45,6 +45,16 @@ def diff_summary(worktree_dir: Path) -> str:
     return "\n".join(lines)
 
 
+def changed_paths(worktree_dir: Path) -> list[str]:
+    """Relative paths of everything changed in the worktree, tracked or new
+    (via intent-to-add so untracked new files show up too). Used by the
+    approval gate to decide whether a change stays within safe territory.
+    """
+    _run(["git", "add", "-N", "-A"], worktree_dir)
+    result = _run(["git", "diff", "--name-only", "HEAD"], worktree_dir)
+    return [p for p in result.stdout.splitlines() if p.strip()]
+
+
 def full_diff(worktree_dir: Path, max_chars: int = 12000) -> str:
     """Full diff text (tracked changes + new file contents) for the reviewer
     and security passes. Trimmed so it doesn't blow past a small model's

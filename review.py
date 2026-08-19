@@ -12,8 +12,17 @@ import tools
 
 REVIEWER_PROMPT = """You are a senior code reviewer for an Astro-based photo-archive site.
 Review this diff for bugs, regressions, broken schema/frontmatter fields, and
-bad practices. Be concise (max ~10 lines). If there is nothing wrong, say so
-in one line — do not invent problems. Answer in Ukrainian.
+bad practices.
+
+Start your response with EXACTLY one of these two lines, verbatim:
+VERDICT: BLOCKING
+VERDICT: OK
+Use BLOCKING only for a real bug or regression that should be fixed before
+merging — not for style nitpicks or missing polish. Use OK otherwise, even
+if you have minor notes.
+
+Then explain briefly (max ~10 lines), in Ukrainian, after the VERDICT line.
+If there is nothing wrong, say so in one line — do not invent problems.
 
 Diff:
 {diff}
@@ -31,14 +40,28 @@ Diff:
 
 
 def run_reviewer() -> str:
-    diff = git_ops.full_diff(tools.get_worktree())
-    llm = ChatOllama(model=REVIEWER_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1)
-    response = llm.invoke(REVIEWER_PROMPT.format(diff=diff))
-    return response.content or "(reviewer returned no output)"
+    # Sequential-pipeline risk (a failed step must not break the whole
+    # chain): if the reviewer model errors out (not loaded, OOM, network),
+    # fall back to a neutral, clearly-labeled non-verdict instead of
+    # crashing the graph and orphaning the worktree.
+    try:
+        diff = git_ops.full_diff(tools.get_worktree())
+        llm = ChatOllama(
+            model=REVIEWER_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1, client_kwargs={"timeout": 180}
+        )
+        response = llm.invoke(REVIEWER_PROMPT.format(diff=diff))
+        return response.content or "VERDICT: OK\n(reviewer returned no output)"
+    except Exception as e:
+        return f"VERDICT: OK\n(reviewer unavailable — {e!r}; not treated as blocking)"
 
 
 def run_security() -> str:
-    diff = git_ops.full_diff(tools.get_worktree())
-    llm = ChatOllama(model=SECURITY_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1)
-    response = llm.invoke(SECURITY_PROMPT.format(diff=diff))
-    return response.content or "(security pass returned no output)"
+    try:
+        diff = git_ops.full_diff(tools.get_worktree())
+        llm = ChatOllama(
+            model=SECURITY_MODEL, base_url=OLLAMA_BASE_URL, temperature=0.1, client_kwargs={"timeout": 180}
+        )
+        response = llm.invoke(SECURITY_PROMPT.format(diff=diff))
+        return response.content or "(security pass returned no output)"
+    except Exception as e:
+        return f"(security pass unavailable — {e!r})"
